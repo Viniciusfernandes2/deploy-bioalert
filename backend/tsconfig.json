@@ -8,12 +8,9 @@
     "strict": false,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": "src"
   },
   "include": [
-    "src",
-    // Bruno Menezes 01.11.2024: Troquei para incluir todos os arquivos .ts
-    //"index.ts"
-     "*.ts"
+    "src/**/*"
   ]
 }

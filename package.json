@@ -1,5 +1,5 @@
 {
-  "name": "bioalert-api",
+  "name": "deploy-bioalert",
   "version": "1.0.0",
   "description": "",
   "main": "dist/index.js",

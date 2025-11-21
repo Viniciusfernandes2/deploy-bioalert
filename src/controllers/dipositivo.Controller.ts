@@ -79,7 +79,6 @@ export async function registrarDispositivo(req: Request, res: Response) {
         nome: nome || existing.nome,
         device_token_hash: tokenHash,
         token_revoked: false
-        // não altera codigo_curto
       })
       .eq('id', existing.id)
       .select('*')
@@ -224,7 +223,7 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
     });
   } catch (e: any) {
     return res.status(500).json({
-      erro: 'Erro interno no pareamento',
+      erro: 'Erro interno ao pareamento',
       detalhe: e?.message
     });
   }
@@ -305,6 +304,52 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       .from('dispositivos')
       .update({ last_seen: new Date().toISOString() })
       .eq('id', device.id);
+
+    // ------------------------------------------------------------------
+    // 🚀 ENVIO DE PUSH NOTIFICATION PARA TODOS OS CUIDADORES VINCULADOS
+    // ------------------------------------------------------------------
+
+    const { data: vinculos, error: vErr } = await supabaseAdmin
+      .from('usuarios_assistidos')
+      .select(`
+        usuario:usuarios (
+          id,
+          nome_completo,
+          expo_push_token
+        )
+      `)
+      .eq('assistido_id', device.assistido_id);
+
+    if (!vErr && Array.isArray(vinculos)) {
+      for (const v of vinculos) {
+        const usuario = Array.isArray(v.usuario) ? v.usuario[0] : v.usuario;
+
+        if (usuario?.expo_push_token) {
+          try {
+            await fetch('https://exp.host/--/api/v2/push/send', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                to: usuario.expo_push_token,
+                sound: 'default',
+                title: '⚠️ Queda detectada!',
+                body: `Uma possível queda foi detectada.`,
+                data: {
+                  assistido_id: device.assistido_id,
+                  evento_id: inserted.id
+                }
+              })
+            });
+          } catch (pushErr) {
+            console.log('Erro ao enviar push:', pushErr);
+          }
+        }
+      }
+    }
+
+    // ------------------------------------------------------------------
 
     return res.status(201).json({ ok: true, evento: inserted });
   } catch (e: any) {

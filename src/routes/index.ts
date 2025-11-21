@@ -1,31 +1,35 @@
 import { Router } from 'express';
 import cors from 'cors';
 import { supabaseAdmin } from '../lib/supabase';
+
 import { deviceAuth } from '../middlewares/deviceAuth';
 import { requireSupabaseUser } from '../middlewares/auth';
 
-// Controllers
+// Controllers — Auth
 import { loginUsuario } from '../controllers/login.controller';
-
 import { registerUsuario } from '../controllers/register.controller';
 
+// Controllers — Usuarios
 import {
   getMeuPerfil,
   atualizarMeuPerfil,
   deletarMinhaConta
 } from '../controllers/usuarios.controller';
 
+// Controllers — Assistidos
 import {
   criarAssistido,
   meusAssistidos,
   buscarAssistido
 } from '../controllers/assistidos.controller';
 
+// Controllers — Vínculos
 import {
   vincularCuidadorIdoso,
   desvincularCuidador
 } from '../controllers/vinculos.controller';
 
+// Controllers — Dispositivo (ESP32)
 import {
   registrarDispositivo,
   parearDispositivo,
@@ -36,14 +40,19 @@ import {
   unpairDevice
 } from '../controllers/dipositivo.Controller';
 
+// Controller — Push Token
+import { salvarExpoPushToken } from '../controllers/pushToken.controller';
+
 const router = Router();
+
+// === Config Geral ===
 router.use(cors({ origin: true }));
 
 // 🩺 Health check
 router.get('/health', (_req, res) => {
   res.json({
     ok: true,
-    name: 'Bio Alert API', 
+    name: 'Bio Alert API',
     timestamp: new Date().toISOString()
   });
 });
@@ -52,36 +61,45 @@ router.get('/health', (_req, res) => {
 router.get('/debug/db', async (_req, res) => {
   const { error } = await supabaseAdmin.from('usuarios').select('id').limit(1);
   if (error) {
-    return res.status(500).json({ ok: false, db: false, error: error.message });
+    return res.status(500).json({
+      ok: false,
+      db: false,
+      error: error.message
+    });
   }
   return res.json({ ok: true, db: true });
 });
 
-// 🔐 Auth
+// === Auth ===
 router.post('/register', registerUsuario);
 router.post('/login', loginUsuario);
 
-// 👤 Rotas do usuário autenticado
+// === Usuário autenticado ===
 router.get('/usuarios/me', requireSupabaseUser, getMeuPerfil);
 router.patch('/usuarios/me', requireSupabaseUser, atualizarMeuPerfil);
 router.delete('/usuarios/me', requireSupabaseUser, deletarMinhaConta);
 
-// 👥 Assistidos
+// ⭐ Nova rota para salvar push token
+router.post('/usuarios/push-token', requireSupabaseUser, salvarExpoPushToken);
+
+// === Assistidos ===
 router.post('/assistidos', requireSupabaseUser, criarAssistido);
 router.get('/assistidos/meus', requireSupabaseUser, meusAssistidos);
 router.get('/assistidos/:id', requireSupabaseUser, buscarAssistido);
 
-// 🔗 Vínculos (compartilhamento e desvincular)
+// === Vínculos Cuidador ↔ Assistido ===
 router.post('/vinculos', requireSupabaseUser, vincularCuidadorIdoso);
 router.delete('/vinculos/:assistido_id', requireSupabaseUser, desvincularCuidador);
 
-// ⚙️ Rotas do dispositivo (ESP32)
-router.post('/device/register', registrarDispositivo); // primeiro contato da ESP
-router.post('/device/pair', requireSupabaseUser, parearDispositivo); // app vincula device ao assistido
-router.post('/device/event', deviceAuth, registrarEventoDispositivo); // queda
-router.post('/device/heartbeat', deviceAuth, heartbeatDispositivo);   // ping
+// === Dispositivo (ESP32) ===
+router.post('/device/register', registrarDispositivo);
+router.post('/device/pair', requireSupabaseUser, parearDispositivo);
+router.post('/device/event', deviceAuth, registrarEventoDispositivo);
+router.post('/device/heartbeat', deviceAuth, heartbeatDispositivo);
 router.get('/device/status', deviceAuth, deviceStatus);
 router.post('/device/unpair', requireSupabaseUser, unpairDevice);
+
+// Histórico de quedas do assistido
 router.get('/assistidos/:id/quedas', requireSupabaseUser, listarQuedasAssistido);
 
 export default router;

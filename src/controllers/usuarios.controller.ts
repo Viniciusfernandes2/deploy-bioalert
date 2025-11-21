@@ -12,7 +12,7 @@ export async function getMeuPerfil(req: Request, res: Response) {
 
     const { data: usuario, error } = await supabaseAdmin
       .from('usuarios')
-      .select('id, auth_user_id, nome_completo, data_nascimento, telefone, email, criado_em')
+      .select('id, auth_user_id, nome_completo, data_nascimento, telefone, email, criado_em, expo_push_token')
       .eq('id', usuarioId)
       .single();
 
@@ -28,7 +28,7 @@ export async function getMeuPerfil(req: Request, res: Response) {
 
 /**
  * PATCH /usuarios/me
- * Atualiza os dados do usuário logado
+ * Atualiza os dados do usuário logado + expo_push_token
  */
 export async function atualizarMeuPerfil(req: Request, res: Response) {
   try {
@@ -39,7 +39,13 @@ export async function atualizarMeuPerfil(req: Request, res: Response) {
       return res.status(401).json({ erro: 'Não autenticado' });
     }
 
-    const camposPermitidos = ['nome_completo', 'telefone', 'data_nascimento'];
+    const camposPermitidos = [
+      'nome_completo',
+      'telefone',
+      'data_nascimento',
+      'expo_push_token' // ⭐ agora permitido
+    ];
+
     const dadosAtualizar: any = {};
 
     for (const campo of camposPermitidos) {
@@ -52,7 +58,6 @@ export async function atualizarMeuPerfil(req: Request, res: Response) {
       return res.status(400).json({ erro: 'Nenhum campo válido enviado para atualização.' });
     }
 
-    // Atualiza tabela local
     const { data: atualizado, error: updateErr } = await supabaseAdmin
       .from('usuarios')
       .update(dadosAtualizar)
@@ -75,8 +80,6 @@ export async function atualizarMeuPerfil(req: Request, res: Response) {
 
 /**
  * DELETE /usuarios/me
- * Deleta a conta do usuário logado
- * Remove no Supabase Auth + remove no DB interno
  */
 export async function deletarMinhaConta(req: Request, res: Response) {
   try {
@@ -87,7 +90,6 @@ export async function deletarMinhaConta(req: Request, res: Response) {
       return res.status(401).json({ erro: 'Não autenticado' });
     }
 
-    // 1) Remove da tabela interna
     const { error: delErrDb } = await supabaseAdmin
       .from('usuarios')
       .delete()
@@ -100,7 +102,6 @@ export async function deletarMinhaConta(req: Request, res: Response) {
       });
     }
 
-    // 2) Remove do Supabase Auth
     const { error: delAuthErr } = await supabaseAdmin.auth.admin.deleteUser(supabaseUserId);
 
     if (delAuthErr) {
@@ -115,5 +116,3 @@ export async function deletarMinhaConta(req: Request, res: Response) {
     return res.status(500).json({ erro: 'Erro interno ao remover usuário', detalhe: e?.message });
   }
 }
-
-

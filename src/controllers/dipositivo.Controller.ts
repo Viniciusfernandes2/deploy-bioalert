@@ -22,27 +22,17 @@ export async function registrarDispositivo(req: Request, res: Response) {
       return res.status(400).json({ erro: 'codigo_esp é obrigatório' });
     }
 
-    // Buscar se já existe
-    const { data: existing, error: exErr } = await supabaseAdmin
+    const { data: existing } = await supabaseAdmin
       .from('dispositivos')
       .select('*')
       .eq('codigo_esp', codigo_esp)
       .limit(1)
       .maybeSingle();
 
-    if (exErr) {
-      return res.status(500).json({
-        erro: 'Erro ao verificar dispositivo',
-        detalhe: exErr.message
-      });
-    }
-
-    // gerar token e código curto
     const tokenPlain = gerarDeviceToken();
     const tokenHash = await hashDeviceToken(tokenPlain);
     const codigoCurto = gerarCodigoCurto();
 
-    // Criar novo dispositivo
     if (!existing) {
       const { data: created, error: createErr } = await supabaseAdmin
         .from('dispositivos')
@@ -72,7 +62,7 @@ export async function registrarDispositivo(req: Request, res: Response) {
       });
     }
 
-    // Se já existir → reemitir token
+    // atualizar existente
     const { data: upd, error: updErr } = await supabaseAdmin
       .from('dispositivos')
       .update({
@@ -98,10 +88,7 @@ export async function registrarDispositivo(req: Request, res: Response) {
       codigo_curto: upd.codigo_curto
     });
   } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno ao registrar dispositivo',
-      detalhe: e?.message
-    });
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
   }
 }
 
@@ -111,91 +98,55 @@ export async function registrarDispositivo(req: Request, res: Response) {
 export async function parearDispositivo(req: ReqWithUser, res: Response) {
   try {
     const usuarioId = req.usuarioId;
-    if (!usuarioId) {
-      return res.status(401).json({ erro: 'Não autenticado' });
-    }
+    if (!usuarioId) return res.status(401).json({ erro: 'Não autenticado' });
 
     const { codigo_esp, codigo_curto, assistido_id, pair_code } = req.body;
 
-    if (!codigo_curto && !codigo_esp) {
-      return res.status(400).json({
-        erro: 'Envie codigo_curto OU codigo_esp'
-      });
-    }
+    if (!codigo_esp && !codigo_curto)
+      return res.status(400).json({ erro: 'Envie codigo_esp ou codigo_curto' });
 
-    if (!assistido_id) {
-      return res.status(400).json({
-        erro: 'assistido_id é obrigatório'
-      });
-    }
+    if (!assistido_id)
+      return res.status(400).json({ erro: 'assistido_id é obrigatório' });
 
-    // Checar vínculo
-    const { data: vinculo, error: vincErr } = await supabaseAdmin
+    // validar vinculo
+    const { data: vinculo } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select('id')
       .eq('usuario_id', usuarioId)
       .eq('assistido_id', assistido_id)
-      .limit(1)
       .maybeSingle();
 
-    if (vincErr) {
-      return res.status(500).json({
-        erro: 'Falha ao verificar vínculo',
-        detalhe: vincErr.message
-      });
-    }
+    if (!vinculo)
+      return res.status(403).json({ erro: 'Você não está vinculado a esse assistido' });
 
-    if (!vinculo) {
-      return res.status(403).json({
-        erro: 'Você não está vinculado a esse assistido'
-      });
-    }
+    // buscar dispositivo
+    let q = supabaseAdmin.from('dispositivos').select('*').limit(1);
+    if (codigo_curto) q = q.eq('codigo_curto', codigo_curto);
+    else q = q.eq('codigo_esp', codigo_esp);
 
-    // 🔧 BUSCA SEGURA (SEM MATCH)
-    let query = supabaseAdmin.from('dispositivos').select('*').limit(1);
-    if (codigo_curto) query = query.eq('codigo_curto', codigo_curto);
-    else query = query.eq('codigo_esp', codigo_esp);
+    const { data: dispositivo, error: dispErr } = await q.maybeSingle();
+    if (dispErr) return res.status(500).json({ erro: 'Erro ao buscar dispositivo' });
 
-    const { data: dispositivo, error: dispErr } = await query.maybeSingle();
-
-    if (dispErr) {
-      return res.status(500).json({
-        erro: 'Erro ao buscar dispositivo',
-        detalhe: dispErr.message
-      });
-    }
-
-    if (!dispositivo) {
+    if (!dispositivo)
       return res.status(404).json({ erro: 'Dispositivo não encontrado' });
-    }
 
-    // 🟥 AQUI ESTAVA O BUG: assistido_id vinha null, mas o UPDATE NÃO PASSAVA
-    // Porque o Supabase compara null com NULL de forma SENSÍVEL
-    if (dispositivo.assistido_id !== null) {
+    if (dispositivo.assistido_id !== null)
       return res.status(409).json({ erro: 'Dispositivo já está pareado' });
-    }
 
-    // Pair code (se existir)
+    // pair code
     if (dispositivo.pair_code_hash) {
-      if (!pair_code) {
-        return res.status(400).json({ erro: 'pair_code obrigatório' });
-      }
+      if (!pair_code) return res.status(400).json({ erro: 'pair_code obrigatório' });
 
       const ok = await bcrypt.compare(pair_code, dispositivo.pair_code_hash);
-
       const expirado =
         dispositivo.pair_code_expires_at &&
         new Date(dispositivo.pair_code_expires_at) < new Date();
 
-      if (!ok || dispositivo.pair_code_used || expirado) {
-        return res.status(403).json({
-          erro: 'Pair code inválido ou expirado'
-        });
-      }
+      if (!ok || dispositivo.pair_code_used || expirado)
+        return res.status(403).json({ erro: 'Pair code inválido ou expirado' });
     }
 
-    // 🔥 CORREÇÃO ABSOLUTA DO BUG 409:
-    // ❗ Removido o .eq("assistido_id", null)
+    // atualizar
     const { data: updated, error: updErr } = await supabaseAdmin
       .from('dispositivos')
       .update({
@@ -207,22 +158,11 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
       .select('*')
       .single();
 
-    if (updErr) {
-      return res.status(409).json({
-        erro: 'Falha ao parear: conflito inesperado',
-        detalhe: updErr.message
-      });
-    }
+    if (updErr) return res.status(409).json({ erro: 'Falha ao parear', detalhe: updErr.message });
 
-    return res.json({
-      mensagem: 'Pareado com sucesso',
-      dispositivo: updated
-    });
+    return res.json({ mensagem: 'Pareado com sucesso', dispositivo: updated });
   } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno ao pareamento',
-      detalhe: e?.message
-    });
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
   }
 }
 
@@ -232,15 +172,10 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
 export async function registrarEventoDispositivo(req: Request, res: Response) {
   try {
     const device = (req as any).device;
-    if (!device) {
-      return res.status(401).json({ erro: 'Dispositivo não autenticado' });
-    }
+    if (!device) return res.status(401).json({ erro: 'Dispositivo não autenticado' });
 
-    if (!device.assistido_id) {
-      return res.status(400).json({
-        erro: 'Dispositivo não pareado — vincule antes de usar.'
-      });
-    }
+    if (!device.assistido_id)
+      return res.status(400).json({ erro: 'Dispositivo não pareado' });
 
     const {
       event_id = null,
@@ -258,15 +193,9 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
         .from('hist_quedas')
         .select('id')
         .eq('event_id', event_id)
-        .limit(1)
         .maybeSingle();
 
-      if (exists) {
-        return res.status(200).json({
-          ok: true,
-          mensagem: 'Evento já registrado'
-        });
-      }
+      if (exists) return res.status(200).json({ ok: true, mensagem: 'Evento já registrado' });
     }
 
     const { data: inserted, error: insErr } = await supabaseAdmin
@@ -286,19 +215,12 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       .select('*')
       .single();
 
-    if (insErr) {
-      return res.status(500).json({
-        erro: 'Falha ao registrar evento',
-        detalhe: insErr.message
-      });
-    }
+    if (insErr)
+      return res.status(500).json({ erro: 'Falha ao registrar evento', detalhe: insErr.message });
 
     return res.status(201).json({ ok: true, evento: inserted });
   } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno ao registrar evento',
-      detalhe: e?.message
-    });
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
   }
 }
 
@@ -308,9 +230,7 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
 export async function heartbeatDispositivo(req: Request, res: Response) {
   try {
     const device = (req as any).device;
-    if (!device) {
-      return res.status(401).json({ erro: 'Dispositivo não autenticado' });
-    }
+    if (!device) return res.status(401).json({ erro: 'Dispositivo não autenticado' });
 
     await supabaseAdmin
       .from('dispositivos')
@@ -319,10 +239,7 @@ export async function heartbeatDispositivo(req: Request, res: Response) {
 
     return res.json({ ok: true });
   } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno heartbeat',
-      detalhe: e?.message
-    });
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
   }
 }
 
@@ -332,9 +249,7 @@ export async function heartbeatDispositivo(req: Request, res: Response) {
 export async function deviceStatus(req: Request, res: Response) {
   try {
     const device = (req as any).device;
-    if (!device) {
-      return res.status(401).json({ erro: 'Dispositivo não autenticado' });
-    }
+    if (!device) return res.status(401).json({ erro: 'Dispositivo não autenticado' });
 
     const { data: devFresh, error: devErr } = await supabaseAdmin
       .from('dispositivos')
@@ -349,36 +264,112 @@ export async function deviceStatus(req: Request, res: Response) {
         firmware_version
       `)
       .eq('id', device.id)
-      .limit(1)
       .maybeSingle();
 
-    if (devErr) {
-      return res.status(500).json({
-        erro: 'Erro ao buscar status do dispositivo',
-        detalhe: devErr.message
-      });
-    }
+    if (devErr) return res.status(500).json({ erro: 'Erro ao buscar status' });
 
-    if (!devFresh) {
-      return res.status(404).json({
-        erro: 'Dispositivo não encontrado'
-      });
-    }
+    if (!devFresh) return res.status(404).json({ erro: 'Dispositivo não encontrado' });
 
     return res.json({
       pareado: !!devFresh.assistido_id,
-      assistido_id: devFresh.assistido_id || null,
+      assistido_id: devFresh.assistido_id,
       codigo_esp: devFresh.codigo_esp,
       codigo_curto: devFresh.codigo_curto,
-      paired_at: devFresh.paired_at || null,
-      last_seen: devFresh.last_seen || null,
-      nome: devFresh.nome || null,
-      firmware_version: devFresh.firmware_version || null
+      paired_at: devFresh.paired_at,
+      last_seen: devFresh.last_seen,
+      nome: devFresh.nome,
+      firmware_version: devFresh.firmware_version
     });
   } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno device status',
-      detalhe: e?.message
-    });
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
+  }
+}
+
+/**
+ * POST /device/unpair
+ */
+export async function unpairDevice(req: ReqWithUser, res: Response) {
+  try {
+    const usuarioId = req.usuarioId;
+    if (!usuarioId) return res.status(401).json({ erro: 'Não autenticado' });
+
+    const { codigo_esp, codigo_curto } = req.body;
+
+    if (!codigo_esp && !codigo_curto)
+      return res.status(400).json({ erro: 'Envie codigo_esp OU codigo_curto' });
+
+    let q = supabaseAdmin.from('dispositivos').select('*').limit(1);
+    if (codigo_curto) q = q.eq('codigo_curto', codigo_curto);
+    else q = q.eq('codigo_esp', codigo_esp);
+
+    const { data: dispositivo } = await q.maybeSingle();
+
+    if (!dispositivo)
+      return res.status(404).json({ erro: 'Dispositivo não encontrado' });
+
+    if (!dispositivo.assistido_id)
+      return res.status(400).json({ erro: 'Dispositivo não está pareado' });
+
+    const { data: vinculo } = await supabaseAdmin
+      .from('usuarios_assistidos')
+      .select('id')
+      .eq('usuario_id', usuarioId)
+      .eq('assistido_id', dispositivo.assistido_id)
+      .maybeSingle();
+
+    if (!vinculo)
+      return res.status(403).json({ erro: 'Você não pode desvincular este dispositivo' });
+
+    const { data: updated } = await supabaseAdmin
+      .from('dispositivos')
+      .update({
+        assistido_id: null,
+        paired_by: null,
+        paired_at: null
+      })
+      .eq('id', dispositivo.id)
+      .select('*')
+      .single();
+
+    return res.json({ mensagem: 'Dispositivo desvinculado com sucesso', dispositivo: updated });
+  } catch (e: any) {
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
+  }
+}
+
+/**
+ * GET /assistidos/:id/quedas
+ */
+export async function listarQuedasAssistido(req: ReqWithUser, res: Response) {
+  try {
+    const usuarioId = req.usuarioId;
+    if (!usuarioId) return res.status(401).json({ erro: 'Não autenticado' });
+
+    const assistidoId = req.params.id;
+
+    const { data: vinculo } = await supabaseAdmin
+      .from('usuarios_assistidos')
+      .select('id')
+      .eq('usuario_id', usuarioId)
+      .eq('assistido_id', assistidoId)
+      .maybeSingle();
+
+    if (!vinculo)
+      return res.status(403).json({ erro: 'Você não pode acessar este assistido' });
+
+    const page = parseInt(req.query.page as string) || 1;
+    const pageSize = Math.min(parseInt(req.query.pageSize as string) || 20, 100);
+    const offset = (page - 1) * pageSize;
+
+    const { data: quedas } = await supabaseAdmin
+      .from('hist_quedas')
+      .select('*')
+      .eq('assistido_id', assistidoId)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + pageSize - 1);
+
+    return res.json({ page, pageSize, items: quedas || [] });
+  } catch (e: any) {
+    return res.status(500).json({ erro: 'Erro interno', detalhe: e?.message });
   }
 }

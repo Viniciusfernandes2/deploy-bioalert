@@ -151,15 +151,15 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
       });
     }
 
-    // Buscar dispositivo por codigo_curto OU codigo_esp
-    const filtro = codigo_curto ? { codigo_curto } : { codigo_esp };
+    // -----------------------------------------------------------------------
+    // 🔧 CORREÇÃO: busca segura (SEM match)
+    // -----------------------------------------------------------------------
+    let query = supabaseAdmin.from('dispositivos').select('*').limit(1);
+    if (codigo_curto) query = query.eq('codigo_curto', codigo_curto);
+    else query = query.eq('codigo_esp', codigo_esp);
 
-    const { data: dispositivo, error: dispErr } = await supabaseAdmin
-      .from('dispositivos')
-      .select('*')
-      .match(filtro)
-      .limit(1)
-      .maybeSingle();
+    const { data: dispositivo, error: dispErr } = await query.maybeSingle();
+    // -----------------------------------------------------------------------
 
     if (dispErr) {
       return res.status(500).json({
@@ -239,7 +239,6 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       return res.status(401).json({ erro: 'Dispositivo não autenticado' });
     }
 
-    // 🚨 Bloqueia eventos se não estiver pareado
     if (!device.assistido_id) {
       return res.status(400).json({
         erro: 'Dispositivo não pareado — vincule antes de usar.'
@@ -257,7 +256,6 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       raw_payload = null
     } = req.body;
 
-    // deduplicação por event_id
     if (event_id) {
       const { data: exists } = await supabaseAdmin
         .from('hist_quedas')
@@ -274,7 +272,6 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       }
     }
 
-    // inserir queda
     const { data: inserted, error: insErr } = await supabaseAdmin
       .from('hist_quedas')
       .insert({
@@ -299,17 +296,12 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       });
     }
 
-    // atualizar last_seen
     await supabaseAdmin
       .from('dispositivos')
       .update({ last_seen: new Date().toISOString() })
       .eq('id', device.id);
 
-    // ------------------------------------------------------------------
-    // 🚀 ENVIO DE PUSH NOTIFICATION PARA TODOS OS CUIDADORES VINCULADOS
-    // ------------------------------------------------------------------
-
-    const { data: vinculos, error: vErr } = await supabaseAdmin
+    const { data: vinculos } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select(`
         usuario:usuarios (
@@ -320,10 +312,9 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       `)
       .eq('assistido_id', device.assistido_id);
 
-    if (!vErr && Array.isArray(vinculos)) {
+    if (Array.isArray(vinculos)) {
       for (const v of vinculos) {
         const usuario = Array.isArray(v.usuario) ? v.usuario[0] : v.usuario;
-
         if (usuario?.expo_push_token) {
           try {
             await fetch('https://exp.host/--/api/v2/push/send', {
@@ -342,14 +333,10 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
                 }
               })
             });
-          } catch (pushErr) {
-            console.log('Erro ao enviar push:', pushErr);
-          }
+          } catch {}
         }
       }
     }
-
-    // ------------------------------------------------------------------
 
     return res.status(201).json({ ok: true, evento: inserted });
   } catch (e: any) {
@@ -459,14 +446,15 @@ export async function unpairDevice(req: ReqWithUser, res: Response) {
       });
     }
 
-    const filtro = codigo_curto ? { codigo_curto } : { codigo_esp };
+    // -----------------------------------------------------------------------
+    // 🔧 CORREÇÃO: busca segura (SEM match)
+    // -----------------------------------------------------------------------
+    let query = supabaseAdmin.from('dispositivos').select('*').limit(1);
+    if (codigo_curto) query = query.eq('codigo_curto', codigo_curto);
+    else query = query.eq('codigo_esp', codigo_esp);
 
-    const { data: dispositivo, error: dErr } = await supabaseAdmin
-      .from('dispositivos')
-      .select('*')
-      .match(filtro)
-      .limit(1)
-      .maybeSingle();
+    const { data: dispositivo, error: dErr } = await query.maybeSingle();
+    // -----------------------------------------------------------------------
 
     if (dErr) {
       return res.status(500).json({
@@ -487,7 +475,6 @@ export async function unpairDevice(req: ReqWithUser, res: Response) {
       });
     }
 
-    // verificar vinculo
     const { data: vinculo, error: vincErr } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select('id')
@@ -554,7 +541,6 @@ export async function listarQuedasAssistido(req: ReqWithUser, res: Response) {
       return res.status(400).json({ erro: 'assistido id requerido' });
     }
 
-    // verificar vínculo
     const { data: vinculo, error: vincErr } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select('id')
@@ -576,7 +562,6 @@ export async function listarQuedasAssistido(req: ReqWithUser, res: Response) {
       });
     }
 
-    // paginação
     const page = parseInt(req.query.page as string) || 1;
     const pageSize = Math.min(
       parseInt(req.query.pageSize as string) || 20,

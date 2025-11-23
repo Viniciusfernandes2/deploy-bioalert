@@ -374,8 +374,15 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
         // 3. Enviar notificações
         for (const usuario of usuarios) {
           try {
-            console.log(`[Queda] Enviando para: ${usuario.nome_completo}`);
+            console.log(`[Queda] Enviando para: ${usuario.nome_completo} - Token: ${usuario.expo_push_token?.substring(0, 20)}...`);
             
+            // Verificar se token é válido
+            if (!usuario.expo_push_token || !usuario.expo_push_token.startsWith('ExponentPushToken')) {
+              console.log(`[Queda] ❌ Token inválido para ${usuario.nome_completo}`);
+              notificacoesFalhas++;
+              continue;
+            }
+
             // 🔥 PAYLOAD COMPLETO E TESTADO
             const pushBody = {
               to: usuario.expo_push_token,
@@ -394,6 +401,7 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
               _displayInForeground: true
             };
 
+            console.log(`[Queda] Enviando payload para Expo...`);
             const response = await fetch('https://exp.host/--/api/v2/push/send', {
               method: 'POST',
               headers: {
@@ -404,7 +412,7 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
             });
 
             const result = await response.json();
-            console.log(`[Queda] Resposta Expo para ${usuario.nome_completo}:`, result.data?.status);
+            console.log(`[Queda] Resposta Expo para ${usuario.nome_completo}:`, result);
             
             if (result.data?.status === 'ok') {
               notificacoesEnviadas++;
@@ -427,7 +435,14 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       console.log('[Queda] Nenhum cuidador vinculado encontrado');
     }
 
-    return res.status(201).json({ ok: true, evento: inserted });
+    return res.status(201).json({ 
+      ok: true, 
+      evento: inserted,
+      notificacoes: {
+        enviadas: notificacoesEnviadas,
+        falhas: notificacoesFalhas
+      }
+    });
   } catch (e: any) {
     return res.status(500).json({
       erro: 'Erro interno ao registrar evento',
@@ -693,6 +708,55 @@ export async function listarQuedasAssistido(req: ReqWithUser, res: Response) {
     return res.status(500).json({
       erro: 'Erro interno listar quedas',
       detalhe: e?.message
+    });
+  }
+}
+
+/**
+ * 🔥 NOVO ENDPOINT: Atualizar Token Push
+ * POST /usuarios/atualizar-token-push
+ */
+export async function atualizarTokenPush(req: ReqWithUser, res: Response) {
+  try {
+    const usuarioId = req.usuarioId;
+    const { expo_push_token } = req.body;
+
+    if (!usuarioId) {
+      return res.status(401).json({ erro: "Não autenticado" });
+    }
+
+    if (!expo_push_token) {
+      return res.status(400).json({ erro: "expo_push_token é obrigatório" });
+    }
+
+    console.log(`[TokenPush] Atualizando token para usuário ${usuarioId}: ${expo_push_token.substring(0, 20)}...`);
+
+    const { data: updated, error } = await supabaseAdmin
+      .from("usuarios")
+      .update({ expo_push_token })
+      .eq("id", usuarioId)
+      .select("id, nome_completo, expo_push_token")
+      .single();
+
+    if (error) {
+      console.error('[TokenPush] Erro ao atualizar:', error);
+      return res.status(500).json({
+        erro: "Falha ao atualizar token push",
+        detalhe: error.message,
+      });
+    }
+
+    console.log('[TokenPush] ✅ Token atualizado com sucesso');
+    return res.json({
+      mensagem: "Token push atualizado com sucesso!",
+      usuario: updated,
+    });
+
+  } catch (e: any) {
+    console.error('[TokenPush] Erro interno:', e);
+    return res.status(500).json({
+      erro: "Erro interno ao atualizar token push",
+      detalhe: e?.message,
     });
   }
 }

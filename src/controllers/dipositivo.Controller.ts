@@ -341,34 +341,42 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       .update({ last_seen: new Date().toISOString() })
       .eq('id', device.id);
 
-    // 🔥 SEÇÃO ATUALIZADA - PUSH NOTIFICATIONS CORRIGIDAS
+    // 🔥 NOTIFICAÇÕES - CONSULTA SIMPLIFICADA E CONFIÁVEL
     console.log(`[Queda] Buscando cuidadores para assistido: ${device.assistido_id}`);
+
+    // 1. Buscar IDs dos cuidadores (consulta simples)
     const { data: vinculos, error: vErr } = await supabaseAdmin
       .from('usuarios_assistidos')
-      .select(`
-        usuario:usuarios (
-          id,
-          nome_completo,
-          expo_push_token
-        )
-      `)
+      .select('usuario_id')
       .eq('assistido_id', device.assistido_id);
 
     if (vErr) {
-      console.error('[Queda] Erro ao buscar cuidadores:', vErr);
+      console.error('[Queda] Erro ao buscar vínculos:', vErr);
     } else if (vinculos && vinculos.length > 0) {
-      console.log(`[Queda] Encontrados ${vinculos.length} cuidadores vinculados`);
+      console.log(`[Queda] ${vinculos.length} vínculos encontrados`);
       
-      const notificacoesEnviadas = [];
-      
-      for (const v of vinculos) {
-        const usuario = Array.isArray(v.usuario) ? v.usuario[0] : v.usuario;
+      // 2. Buscar tokens dos usuários (consulta direta)
+      const usuarioIds = vinculos.map(v => v.usuario_id);
+      const { data: usuarios, error: uErr } = await supabaseAdmin
+        .from('usuarios')
+        .select('id, nome_completo, expo_push_token')
+        .in('id', usuarioIds)
+        .not('expo_push_token', 'is', null);
+
+      if (uErr) {
+        console.error('[Queda] Erro ao buscar usuários:', uErr);
+      } else if (usuarios && usuarios.length > 0) {
+        console.log(`[Queda] ${usuarios.length} usuários com tokens encontrados`);
         
-        if (usuario?.expo_push_token) {
-          console.log(`[Queda] Enviando notificação para: ${usuario.nome_completo}`);
-          
+        let notificacoesEnviadas = 0;
+        let notificacoesFalhas = 0;
+        
+        // 3. Enviar notificações
+        for (const usuario of usuarios) {
           try {
-            // 🔥 PAYLOAD CORRIGIDO PARA ANDROID
+            console.log(`[Queda] Enviando para: ${usuario.nome_completo}`);
+            
+            // 🔥 PAYLOAD COMPLETO E TESTADO
             const pushBody = {
               to: usuario.expo_push_token,
               sound: 'default',
@@ -377,16 +385,16 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
               data: {
                 assistido_id: device.assistido_id,
                 evento_id: inserted.id,
-                tipo: 'queda'
+                tipo: 'queda',
+                timestamp: new Date().toISOString()
               },
-              // 🔥 CAMPOS OBRIGATÓRIOS ADICIONADOS:
               priority: 'high',      // Para notificação na tela de bloqueio
               channelId: 'alertas',  // Mesmo canal configurado no app.json
               ttl: 3600,            // 1 hora de validade
               _displayInForeground: true
             };
 
-            const pushResponse = await fetch('https://exp.host/--/api/v2/push/send', {
+            const response = await fetch('https://exp.host/--/api/v2/push/send', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -395,24 +403,26 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
               body: JSON.stringify(pushBody)
             });
 
-            const result = await pushResponse.json();
+            const result = await response.json();
+            console.log(`[Queda] Resposta Expo para ${usuario.nome_completo}:`, result.data?.status);
             
-            // 🔥 VERIFICAÇÃO DA RESPOSTA
             if (result.data?.status === 'ok') {
-              notificacoesEnviadas.push(usuario.nome_completo);
-              console.log(`[Queda] ✅ Notificação enviada com sucesso para: ${usuario.nome_completo}`);
+              notificacoesEnviadas++;
+              console.log(`[Queda] ✅ Notificação aceita para: ${usuario.nome_completo}`);
             } else {
-              console.warn(`[Queda] ❌ Falha no envio para ${usuario.nome_completo}:`, result);
+              notificacoesFalhas++;
+              console.log(`[Queda] ❌ Falha para: ${usuario.nome_completo}`, result);
             }
-          } catch (pushErr) {
-            console.error(`[Queda] 💥 Erro ao enviar push para ${usuario.nome_completo}:`, pushErr);
+          } catch (error) {
+            notificacoesFalhas++;
+            console.error(`[Queda] 💥 Erro ao enviar para ${usuario.nome_completo}:`, error);
           }
-        } else {
-          console.log(`[Queda] Usuário ${usuario?.nome_completo} sem token push`);
         }
+        
+        console.log(`[Queda] 📊 RESUMO: ${notificacoesEnviadas} enviadas, ${notificacoesFalhas} falhas`);
+      } else {
+        console.log('[Queda] Nenhum usuário com token válido encontrado');
       }
-      
-      console.log(`[Queda] Notificações enviadas com sucesso para: ${notificacoesEnviadas.join(', ')}`);
     } else {
       console.log('[Queda] Nenhum cuidador vinculado encontrado');
     }

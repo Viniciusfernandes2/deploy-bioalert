@@ -37,7 +37,8 @@ import {
   heartbeatDispositivo,
   listarQuedasAssistido,
   deviceStatus,
-  unpairDevice
+  unpairDevice,
+  getDeviceByAssistido
 } from '../controllers/dipositivo.Controller';
 
 // Controller — Push Token
@@ -79,7 +80,7 @@ router.get('/usuarios/me', requireSupabaseUser, getMeuPerfil);
 router.patch('/usuarios/me', requireSupabaseUser, atualizarMeuPerfil);
 router.delete('/usuarios/me', requireSupabaseUser, deletarMinhaConta);
 
-// ⭐ Nova rota para salvar push token
+// ⭐ Push Token
 router.post('/usuarios/push-token', requireSupabaseUser, salvarExpoPushToken);
 
 // === Assistidos ===
@@ -99,7 +100,10 @@ router.post('/device/heartbeat', deviceAuth, heartbeatDispositivo);
 router.get('/device/status', deviceAuth, deviceStatus);
 router.post('/device/unpair', requireSupabaseUser, unpairDevice);
 
-// Histórico de quedas do assistido
+// ⭐ ROTA NOVA (ESSENCIAL PARA O FRONT)
+router.get('/device/by-assistido/:id', requireSupabaseUser, getDeviceByAssistido);
+
+// Histórico de quedas
 router.get('/assistidos/:id/quedas', requireSupabaseUser, listarQuedasAssistido);
 
 export default router;

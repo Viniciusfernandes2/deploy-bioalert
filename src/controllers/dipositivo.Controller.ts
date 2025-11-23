@@ -341,7 +341,8 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       .update({ last_seen: new Date().toISOString() })
       .eq('id', device.id);
 
-    // Enviar push para cuidadores vinculados (se houver)
+    // 🔥 SEÇÃO ATUALIZADA - PUSH NOTIFICATIONS CORRIGIDAS
+    console.log(`[Queda] Buscando cuidadores para assistido: ${device.assistido_id}`);
     const { data: vinculos, error: vErr } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select(`
@@ -353,33 +354,67 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
       `)
       .eq('assistido_id', device.assistido_id);
 
-    if (!vErr && Array.isArray(vinculos)) {
+    if (vErr) {
+      console.error('[Queda] Erro ao buscar cuidadores:', vErr);
+    } else if (vinculos && vinculos.length > 0) {
+      console.log(`[Queda] Encontrados ${vinculos.length} cuidadores vinculados`);
+      
+      const notificacoesEnviadas = [];
+      
       for (const v of vinculos) {
         const usuario = Array.isArray(v.usuario) ? v.usuario[0] : v.usuario;
+        
         if (usuario?.expo_push_token) {
+          console.log(`[Queda] Enviando notificação para: ${usuario.nome_completo}`);
+          
           try {
-            await fetch('https://exp.host/--/api/v2/push/send', {
+            // 🔥 PAYLOAD CORRIGIDO PARA ANDROID
+            const pushBody = {
+              to: usuario.expo_push_token,
+              sound: 'default',
+              title: '🚨 QUEDA DETECTADA!',
+              body: 'Alerta: Queda detectada no assistido monitorado. Verifique imediatamente!',
+              data: {
+                assistido_id: device.assistido_id,
+                evento_id: inserted.id,
+                tipo: 'queda'
+              },
+              // 🔥 CAMPOS OBRIGATÓRIOS ADICIONADOS:
+              priority: 'high',      // Para notificação na tela de bloqueio
+              channelId: 'alertas',  // Mesmo canal configurado no app.json
+              ttl: 3600,            // 1 hora de validade
+              _displayInForeground: true
+            };
+
+            const pushResponse = await fetch('https://exp.host/--/api/v2/push/send', {
               method: 'POST',
               headers: {
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
               },
-              body: JSON.stringify({
-                to: usuario.expo_push_token,
-                sound: 'default',
-                title: '⚠️ Queda detectada!',
-                body: `Uma possível queda foi detectada.`,
-                data: {
-                  assistido_id: device.assistido_id,
-                  evento_id: inserted.id
-                }
-              })
+              body: JSON.stringify(pushBody)
             });
+
+            const result = await pushResponse.json();
+            
+            // 🔥 VERIFICAÇÃO DA RESPOSTA
+            if (result.data?.status === 'ok') {
+              notificacoesEnviadas.push(usuario.nome_completo);
+              console.log(`[Queda] ✅ Notificação enviada com sucesso para: ${usuario.nome_completo}`);
+            } else {
+              console.warn(`[Queda] ❌ Falha no envio para ${usuario.nome_completo}:`, result);
+            }
           } catch (pushErr) {
-            // não interrompemos o fluxo se push falhar
-            console.log('Erro ao enviar push:', pushErr);
+            console.error(`[Queda] 💥 Erro ao enviar push para ${usuario.nome_completo}:`, pushErr);
           }
+        } else {
+          console.log(`[Queda] Usuário ${usuario?.nome_completo} sem token push`);
         }
       }
+      
+      console.log(`[Queda] Notificações enviadas com sucesso para: ${notificacoesEnviadas.join(', ')}`);
+    } else {
+      console.log('[Queda] Nenhum cuidador vinculado encontrado');
     }
 
     return res.status(201).json({ ok: true, evento: inserted });

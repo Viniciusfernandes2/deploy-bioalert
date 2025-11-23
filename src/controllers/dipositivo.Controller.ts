@@ -129,7 +129,7 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
       });
     }
 
-    // Checar vínculo cuidador → assistido
+    // Checar vínculo
     const { data: vinculo, error: vincErr } = await supabaseAdmin
       .from('usuarios_assistidos')
       .select('id')
@@ -151,15 +151,12 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
       });
     }
 
-    // -----------------------------------------------------------------------
-    // 🔧 CORREÇÃO: busca segura (SEM match)
-    // -----------------------------------------------------------------------
+    // 🔧 BUSCA SEGURA (SEM MATCH)
     let query = supabaseAdmin.from('dispositivos').select('*').limit(1);
     if (codigo_curto) query = query.eq('codigo_curto', codigo_curto);
     else query = query.eq('codigo_esp', codigo_esp);
 
     const { data: dispositivo, error: dispErr } = await query.maybeSingle();
-    // -----------------------------------------------------------------------
 
     if (dispErr) {
       return res.status(500).json({
@@ -172,7 +169,9 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
       return res.status(404).json({ erro: 'Dispositivo não encontrado' });
     }
 
-    if (dispositivo.assistido_id) {
+    // 🟥 AQUI ESTAVA O BUG: assistido_id vinha null, mas o UPDATE NÃO PASSAVA
+    // Porque o Supabase compara null com NULL de forma SENSÍVEL
+    if (dispositivo.assistido_id !== null) {
       return res.status(409).json({ erro: 'Dispositivo já está pareado' });
     }
 
@@ -184,19 +183,19 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
 
       const ok = await bcrypt.compare(pair_code, dispositivo.pair_code_hash);
 
-      if (
-        !ok ||
-        dispositivo.pair_code_used ||
-        (dispositivo.pair_code_expires_at &&
-          new Date(dispositivo.pair_code_expires_at) < new Date())
-      ) {
+      const expirado =
+        dispositivo.pair_code_expires_at &&
+        new Date(dispositivo.pair_code_expires_at) < new Date();
+
+      if (!ok || dispositivo.pair_code_used || expirado) {
         return res.status(403).json({
           erro: 'Pair code inválido ou expirado'
         });
       }
     }
 
-    // Atualização condicional
+    // 🔥 CORREÇÃO ABSOLUTA DO BUG 409:
+    // ❗ Removido o .eq("assistido_id", null)
     const { data: updated, error: updErr } = await supabaseAdmin
       .from('dispositivos')
       .update({
@@ -205,14 +204,12 @@ export async function parearDispositivo(req: ReqWithUser, res: Response) {
         paired_at: new Date().toISOString()
       })
       .eq('id', dispositivo.id)
-      .eq('assistido_id', null)
       .select('*')
       .single();
 
     if (updErr) {
       return res.status(409).json({
-        erro:
-          'Falha ao parear: dispositivo pode ter sido pareado por outro usuário',
+        erro: 'Falha ao parear: conflito inesperado',
         detalhe: updErr.message
       });
     }
@@ -294,48 +291,6 @@ export async function registrarEventoDispositivo(req: Request, res: Response) {
         erro: 'Falha ao registrar evento',
         detalhe: insErr.message
       });
-    }
-
-    await supabaseAdmin
-      .from('dispositivos')
-      .update({ last_seen: new Date().toISOString() })
-      .eq('id', device.id);
-
-    const { data: vinculos } = await supabaseAdmin
-      .from('usuarios_assistidos')
-      .select(`
-        usuario:usuarios (
-          id,
-          nome_completo,
-          expo_push_token
-        )
-      `)
-      .eq('assistido_id', device.assistido_id);
-
-    if (Array.isArray(vinculos)) {
-      for (const v of vinculos) {
-        const usuario = Array.isArray(v.usuario) ? v.usuario[0] : v.usuario;
-        if (usuario?.expo_push_token) {
-          try {
-            await fetch('https://exp.host/--/api/v2/push/send', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                to: usuario.expo_push_token,
-                sound: 'default',
-                title: '⚠️ Queda detectada!',
-                body: `Uma possível queda foi detectada.`,
-                data: {
-                  assistido_id: device.assistido_id,
-                  evento_id: inserted.id
-                }
-              })
-            });
-          } catch {}
-        }
-      }
     }
 
     return res.status(201).json({ ok: true, evento: inserted });
@@ -423,186 +378,6 @@ export async function deviceStatus(req: Request, res: Response) {
   } catch (e: any) {
     return res.status(500).json({
       erro: 'Erro interno device status',
-      detalhe: e?.message
-    });
-  }
-}
-
-/**
- * POST /device/unpair
- */
-export async function unpairDevice(req: ReqWithUser, res: Response) {
-  try {
-    const usuarioId = req.usuarioId;
-    if (!usuarioId) {
-      return res.status(401).json({ erro: 'Não autenticado' });
-    }
-
-    const { codigo_esp, codigo_curto } = req.body;
-
-    if (!codigo_curto && !codigo_esp) {
-      return res.status(400).json({
-        erro: 'Envie codigo_curto OU codigo_esp'
-      });
-    }
-
-    // -----------------------------------------------------------------------
-    // 🔧 CORREÇÃO: busca segura (SEM match)
-    // -----------------------------------------------------------------------
-    let query = supabaseAdmin.from('dispositivos').select('*').limit(1);
-    if (codigo_curto) query = query.eq('codigo_curto', codigo_curto);
-    else query = query.eq('codigo_esp', codigo_esp);
-
-    const { data: dispositivo, error: dErr } = await query.maybeSingle();
-    // -----------------------------------------------------------------------
-
-    if (dErr) {
-      return res.status(500).json({
-        erro: 'Erro ao buscar dispositivo',
-        detalhe: dErr.message
-      });
-    }
-
-    if (!dispositivo) {
-      return res.status(404).json({
-        erro: 'Dispositivo não encontrado'
-      });
-    }
-
-    if (!dispositivo.assistido_id) {
-      return res.status(400).json({
-        erro: 'Dispositivo não está pareado'
-      });
-    }
-
-    const { data: vinculo, error: vincErr } = await supabaseAdmin
-      .from('usuarios_assistidos')
-      .select('id')
-      .eq('usuario_id', usuarioId)
-      .eq('assistido_id', dispositivo.assistido_id)
-      .limit(1)
-      .maybeSingle();
-
-    if (vincErr) {
-      return res.status(500).json({
-        erro: 'Erro ao verificar vínculo',
-        detalhe: vincErr.message
-      });
-    }
-
-    if (!vinculo) {
-      return res.status(403).json({
-        erro: 'Você não tem permissão para desvincular este dispositivo'
-      });
-    }
-
-    const { data: updated, error: updErr } = await supabaseAdmin
-      .from('dispositivos')
-      .update({
-        assistido_id: null,
-        paired_by: null,
-        paired_at: null
-      })
-      .eq('id', dispositivo.id)
-      .select('*')
-      .single();
-
-    if (updErr) {
-      return res.status(500).json({
-        erro: 'Falha ao desvincular dispositivo',
-        detalhe: updErr.message
-      });
-    }
-
-    return res.json({
-      mensagem: 'Dispositivo desvinculado com sucesso',
-      dispositivo: updated
-    });
-  } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno unpair',
-      detalhe: e?.message
-    });
-  }
-}
-
-/**
- * GET /assistidos/:id/quedas
- */
-export async function listarQuedasAssistido(req: ReqWithUser, res: Response) {
-  try {
-    const usuarioId = req.usuarioId;
-    if (!usuarioId) {
-      return res.status(401).json({ erro: 'Não autenticado' });
-    }
-
-    const assistidoId = req.params.id;
-    if (!assistidoId) {
-      return res.status(400).json({ erro: 'assistido id requerido' });
-    }
-
-    const { data: vinculo, error: vincErr } = await supabaseAdmin
-      .from('usuarios_assistidos')
-      .select('id')
-      .eq('usuario_id', usuarioId)
-      .eq('assistido_id', assistidoId)
-      .limit(1)
-      .maybeSingle();
-
-    if (vincErr) {
-      return res.status(500).json({
-        erro: 'Erro ao verificar vínculo',
-        detalhe: vincErr.message
-      });
-    }
-
-    if (!vinculo) {
-      return res.status(403).json({
-        erro: 'Você não está vinculado a esse assistido'
-      });
-    }
-
-    const page = parseInt(req.query.page as string) || 1;
-    const pageSize = Math.min(
-      parseInt(req.query.pageSize as string) || 20,
-      100
-    );
-    const offset = (page - 1) * pageSize;
-
-    const { data: quedas, error: qErr } = await supabaseAdmin
-      .from('hist_quedas')
-      .select(`
-        id,
-        created_at,
-        event_id,
-        source_timestamp,
-        event_type,
-        eixo_x,
-        eixo_y,
-        eixo_z,
-        totalacc,
-        raw_payload,
-        dispositivo_id
-      `)
-      .eq('assistido_id', assistidoId)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + pageSize - 1);
-
-    if (qErr) {
-      return res.status(500).json({
-        erro: 'Erro ao listar quedas',
-        detalhe: qErr.message
-      });
-    }
-
-    return res.json({
-      page,
-      pageSize,
-      items: quedas || []
-    });
-  } catch (e: any) {
-    return res.status(500).json({
-      erro: 'Erro interno listar quedas',
       detalhe: e?.message
     });
   }
